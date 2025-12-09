@@ -516,7 +516,18 @@ public class ServerService {
     private void runXray() throws Exception {
         String command = String.format("nohup %s -c %s >/dev/null 2>&1 &", webPath, configPath);
         processManager.startProcess(webName, command);
-        Thread.sleep(1000);
+
+        // 等待xray启动并验证端口监听
+        System.out.println("Waiting for xray to start on port " + appConfig.getArgoPort() + "...");
+        boolean xrayReady = waitForPort(appConfig.getArgoPort(), 10000); // 最多等10秒
+
+        if (xrayReady) {
+            System.out.println("Xray is ready and listening on port " + appConfig.getArgoPort());
+        } else {
+            System.err.println("Warning: Xray may not be ready, but continuing anyway");
+        }
+
+        Thread.sleep(1000); // 额外等待1秒确保稳定
     }
 
     /**
@@ -658,6 +669,34 @@ public class ServerService {
 
         // Upload nodes
         uploadNodes();
+    }
+
+    /**
+     * 等待指定端口开始监听
+     * @param port 端口号
+     * @param timeoutMs 超时时间（毫秒）
+     * @return 端口是否在超时时间内开始监听
+     */
+    private boolean waitForPort(int port, long timeoutMs) {
+        long startTime = System.currentTimeMillis();
+        long endTime = startTime + timeoutMs;
+
+        while (System.currentTimeMillis() < endTime) {
+            try (java.net.Socket socket = new java.net.Socket()) {
+                socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 1000);
+                return true; // 连接成功，端口在监听
+            } catch (IOException e) {
+                // 端口还没准备好，继续等待
+                try {
+                    Thread.sleep(500); // 每500毫秒检查一次
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+
+        return false; // 超时
     }
 
     /**
