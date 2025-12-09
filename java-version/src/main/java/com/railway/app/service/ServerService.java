@@ -94,14 +94,20 @@ public class ServerService {
         System.out.println("Restarting services...");
 
         try {
-            // 停止所有进程
+            // 1. 先停止所有已跟踪的进程（使用当前的随机名称）
             processManager.stopAllProcesses();
 
-            // 重新加载配置
+            // 2. 强制清理所有tunnel相关进程（不依赖随机名称，直接通过进程特征杀死）
+            // 这确保即使进程名称改变，所有旧的cloudflared/xray/nezha进程都会被杀死
+            processManager.cleanupAllTunnelProcesses();
+
+            // 3. 等待端口释放和资源清理（增加等待时间以确保TCP连接完全关闭）
+            Thread.sleep(3000);
+
+            // 4. 重新加载配置
             appConfig.init();
 
-            // 重新启动
-            Thread.sleep(2000);
+            // 5. 重新启动服务
             startServer();
 
         } catch (Exception e) {
@@ -587,8 +593,10 @@ public class ServerService {
                 }
 
                 System.out.println("ArgoDomain not found, re-running bot");
-                // Restart cloudflared
-                processManager.killProcessByName(botName);
+                // Restart cloudflared - 使用更可靠的清理方法
+                processManager.stopProcess(botName);
+                // 额外清理，确保所有cloudflared进程都被杀死
+                processManager.cleanupAllTunnelProcesses();
                 Files.deleteIfExists(bootLogPath);
                 Thread.sleep(3000);
                 runCloudflared();
@@ -716,7 +724,16 @@ public class ServerService {
     @PreDestroy
     public void cleanup() {
         System.out.println("Shutting down services...");
-        processManager.stopAllProcesses();
+        try {
+            // 先停止所有已跟踪的进程
+            processManager.stopAllProcesses();
+            // 强制清理所有tunnel相关进程，确保没有遗漏
+            processManager.cleanupAllTunnelProcesses();
+            // 给予足够的时间让进程完全终止
+            Thread.sleep(2000);
+        } catch (Exception e) {
+            System.err.println("Error during cleanup: " + e.getMessage());
+        }
     }
 
     /**
