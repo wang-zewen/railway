@@ -110,4 +110,63 @@ public class ProcessManager {
         Process process = processes.get(name);
         return process != null && process.isAlive();
     }
+
+    /**
+     * 清理所有tunnel相关进程（cloudflared, xray, nezha）
+     * 这个方法不依赖随机生成的进程名称，直接通过进程命令行特征杀死进程
+     */
+    public void cleanupAllTunnelProcesses() {
+        System.out.println("Cleaning up all tunnel-related processes...");
+
+        try {
+            // 构建清理命令，杀死所有相关进程
+            List<String> commands = new ArrayList<>();
+
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                // Windows: 使用 taskkill
+                commands.add("taskkill /f /im cloudflared.exe");
+                commands.add("taskkill /f /im xray.exe");
+                commands.add("taskkill /f /im nezha-agent.exe");
+            } else {
+                // Linux/Unix: 使用 pkill -f 匹配命令行
+                // 杀死所有cloudflared进程（匹配包含"tunnel"关键字的cloudflared进程）
+                commands.add("pkill -9 -f 'cloudflared.*tunnel'");
+                // 杀死所有xray进程（匹配包含"-c"配置文件参数的xray进程）
+                commands.add("pkill -9 -f 'xray.*-c'");
+                // 杀死所有nezha-agent进程（v0版本）
+                commands.add("pkill -9 -f 'nezha-agent.*-s'");
+                // 杀死所有nezha-agent进程（v1版本）
+                commands.add("pkill -9 -f 'nezha-agent.*-c.*config.yaml'");
+            }
+
+            // 执行所有清理命令
+            for (String command : commands) {
+                try {
+                    ProcessBuilder pb = new ProcessBuilder();
+                    if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                        pb.command("cmd.exe", "/c", command);
+                    } else {
+                        pb.command("sh", "-c", command);
+                    }
+
+                    pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                    pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+
+                    Process process = pb.start();
+                    // 等待命令执行完成
+                    process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    // 忽略单个命令的错误，继续执行其他命令
+                    System.out.println("Warning: Failed to execute cleanup command: " + command);
+                }
+            }
+
+            // 等待一段时间确保进程真正被杀死
+            Thread.sleep(1000);
+            System.out.println("Tunnel processes cleanup completed");
+
+        } catch (Exception e) {
+            System.err.println("Error during tunnel processes cleanup: " + e.getMessage());
+        }
+    }
 }
