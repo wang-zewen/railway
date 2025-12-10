@@ -16,29 +16,49 @@ public class ProcessManager {
     private final ConcurrentHashMap<String, Process> processes = new ConcurrentHashMap<>();
 
     /**
-     * 启动进程
+     * 启动进程并返回 PID
      */
-    public void startProcess(String name, String command) throws IOException {
+    public long startProcess(String name, String command) throws IOException {
         System.out.println("Starting process: " + name);
         System.out.println("Command: " + command);
 
-        ProcessBuilder pb = new ProcessBuilder();
+        long pid = -1;
 
         // 根据操作系统选择不同的 shell
         if (System.getProperty("os.name").toLowerCase().contains("win")) {
-            pb.command("cmd.exe", "/c", command);
+            ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", command);
+            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            Process process = pb.start();
+            processes.put(name, process);
+            pid = process.pid();
         } else {
-            pb.command("sh", "-c", command);
+            // Linux/Unix: 使用脚本获取后台进程的真实 PID
+            // 方法：启动进程后立即输出 $! (后台进程PID)
+            String scriptCommand = String.format("(%s) & echo $!", command);
+
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", scriptCommand);
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+
+            Process process = pb.start();
+
+            // 读取输出的 PID
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                String pidLine = reader.readLine();
+                if (pidLine != null && !pidLine.isEmpty()) {
+                    pid = Long.parseLong(pidLine.trim());
+                }
+            } catch (Exception e) {
+                System.err.println("Error reading PID: " + e.getMessage());
+            }
+
+            process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS);
+            processes.put(name, null); // 不保存 shell process，因为它已经结束
         }
 
-        // 重定向输出到 /dev/null 或 NUL
-        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
-
-        Process process = pb.start();
-        processes.put(name, process);
-
-        System.out.println(name + " is running");
+        System.out.println(name + " is running with PID: " + pid);
+        return pid;
     }
 
     /**
