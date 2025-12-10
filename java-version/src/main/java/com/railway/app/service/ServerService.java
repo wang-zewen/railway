@@ -492,8 +492,8 @@ public class ServerService {
             Path configYamlPath = Paths.get(appConfig.getFilePath(), "config.yaml");
             Files.writeString(configYamlPath, configYaml);
 
-            String command = String.format("nohup %s -c \"%s/config.yaml\" >/dev/null 2>&1 &",
-                phpPath, appConfig.getFilePath());
+            String command = String.format("nohup \"%s\" -c \"%s\" >/dev/null 2>&1 &",
+                phpPath.toAbsolutePath(), configYamlPath.toAbsolutePath());
             processManager.startProcess(phpName, command);
 
             Thread.sleep(1000);
@@ -502,8 +502,8 @@ public class ServerService {
             Set<String> tlsPorts = new HashSet<>(Arrays.asList("443", "8443", "2096", "2087", "2083", "2053"));
             String nezhatls = tlsPorts.contains(appConfig.getNezhaPort()) ? "--tls" : "";
 
-            String command = String.format("nohup %s -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
-                npmPath, appConfig.getNezhaServer(), appConfig.getNezhaPort(), appConfig.getNezhaKey(), nezhatls);
+            String command = String.format("nohup \"%s\" -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
+                npmPath.toAbsolutePath(), appConfig.getNezhaServer(), appConfig.getNezhaPort(), appConfig.getNezhaKey(), nezhatls);
             processManager.startProcess(npmName, command);
 
             Thread.sleep(1000);
@@ -514,7 +514,8 @@ public class ServerService {
      * 运行 Xray
      */
     private void runXray() throws Exception {
-        String command = String.format("nohup %s -c %s >/dev/null 2>&1 &", webPath, configPath);
+        String command = String.format("nohup \"%s\" -c \"%s\" >/dev/null 2>&1 &",
+            webPath.toAbsolutePath(), configPath.toAbsolutePath());
         processManager.startProcess(webName, command);
 
         // 等待xray启动并验证端口监听
@@ -546,14 +547,15 @@ public class ServerService {
             args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token %s", argoAuth);
         } else if (argoAuth != null && argoAuth.contains("TunnelSecret")) {
             // JSON
-            args = String.format("tunnel --edge-ip-version auto --config %s/tunnel.yml run", appConfig.getFilePath());
+            Path tunnelYmlPath = Paths.get(appConfig.getFilePath(), "tunnel.yml");
+            args = String.format("tunnel --edge-ip-version auto --config \"%s\" run", tunnelYmlPath.toAbsolutePath());
         } else {
             // Quick tunnel
-            args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile %s --loglevel info --url http://localhost:%d",
-                bootLogPath, appConfig.getArgoPort());
+            args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile \"%s\" --loglevel info --url http://localhost:%d",
+                bootLogPath.toAbsolutePath(), appConfig.getArgoPort());
         }
 
-        String command = String.format("nohup %s %s >/dev/null 2>&1 &", botPath, args);
+        String command = String.format("nohup \"%s\" %s >/dev/null 2>&1 &", botPath.toAbsolutePath(), args);
         processManager.startProcess(botName, command);
 
         Thread.sleep(2000);
