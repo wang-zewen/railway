@@ -157,6 +157,46 @@ function generateRandomName() {
   return result;
 }
 
+// 等待指定端口开始监听
+async function waitForPort(port, timeoutMs) {
+  const startTime = Date.now();
+  const endTime = startTime + timeoutMs;
+
+  while (Date.now() < endTime) {
+    try {
+      const net = require('net');
+      await new Promise((resolve, reject) => {
+        const socket = new net.Socket();
+        socket.setTimeout(1000);
+
+        socket.on('connect', () => {
+          socket.destroy();
+          resolve(true);
+        });
+
+        socket.on('timeout', () => {
+          socket.destroy();
+          reject(new Error('timeout'));
+        });
+
+        socket.on('error', (err) => {
+          socket.destroy();
+          reject(err);
+        });
+
+        socket.connect(port, '127.0.0.1');
+      });
+
+      return true; // 连接成功，端口在监听
+    } catch (e) {
+      // 端口还没准备好，继续等待
+      await new Promise((resolve) => setTimeout(resolve, 500)); // 每500毫秒检查一次
+    }
+  }
+
+  return false; // 超时
+}
+
 // 全局常量
 const npmName = generateRandomName();
 const webName = generateRandomName();
@@ -792,10 +832,11 @@ use_gitee_to_upgrade: false
 use_ipv6_country_code: false
 uuid: ${UUID}`;
       
-      fs.writeFileSync(path.join(FILE_PATH, 'config.yaml'), configYaml);
-      
+      const configYamlPath = path.join(FILE_PATH, 'config.yaml');
+      fs.writeFileSync(configYamlPath, configYaml);
+
       // 运行 v1
-      const command = `nohup ${phpPath} -c "${FILE_PATH}/config.yaml" >/dev/null 2>&1 &`;
+      const command = `nohup "${phpPath}" -c "${configYamlPath}" >/dev/null 2>&1 &`;
       try {
         await exec(command);
         console.log(`${phpName} is running`);
@@ -809,7 +850,7 @@ uuid: ${UUID}`;
       if (tlsPorts.includes(NEZHA_PORT)) {
         NEZHA_TLS = '--tls';
       }
-      const command = `nohup ${npmPath} -s ${NEZHA_SERVER}:${NEZHA_PORT} -p ${NEZHA_KEY} ${NEZHA_TLS} --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &`;
+      const command = `nohup "${npmPath}" -s ${NEZHA_SERVER}:${NEZHA_PORT} -p ${NEZHA_KEY} ${NEZHA_TLS} --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &`;
       try {
         await exec(command);
         console.log(`${npmName} is running`);
@@ -822,10 +863,21 @@ uuid: ${UUID}`;
     console.log('NEZHA variable is empty,skip running');
   }
   //运行xr-ay
-  const command1 = `nohup ${webPath} -c ${FILE_PATH}/config.json >/dev/null 2>&1 &`;
+  const command1 = `nohup "${webPath}" -c "${configPath}" >/dev/null 2>&1 &`;
   try {
     await exec(command1);
     console.log(`${webName} is running`);
+
+    // 等待xray启动并验证端口监听
+    console.log(`Waiting for xray to start on port ${ARGO_PORT}...`);
+    const xrayReady = await waitForPort(ARGO_PORT, 10000); // 最多等10秒
+
+    if (xrayReady) {
+      console.log(`Xray is ready and listening on port ${ARGO_PORT}`);
+    } else {
+      console.error('Warning: Xray may not be ready, but continuing anyway');
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 1000));
   } catch (error) {
     console.error(`web running error: ${error}`);
@@ -834,17 +886,18 @@ uuid: ${UUID}`;
   // 运行cloud-fared
   if (fs.existsSync(botPath)) {
     let args;
+    const tunnelYmlPath = path.join(FILE_PATH, 'tunnel.yml');
 
     if (ARGO_AUTH.match(/^[A-Z0-9a-z=]{120,250}$/)) {
       args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token ${ARGO_AUTH}`;
     } else if (ARGO_AUTH.match(/TunnelSecret/)) {
-      args = `tunnel --edge-ip-version auto --config ${FILE_PATH}/tunnel.yml run`;
+      args = `tunnel --edge-ip-version auto --config "${tunnelYmlPath}" run`;
     } else {
-      args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile ${FILE_PATH}/boot.log --loglevel info --url http://localhost:${ARGO_PORT}`;
+      args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile "${bootLogPath}" --loglevel info --url http://localhost:${ARGO_PORT}`;
     }
 
     try {
-      await exec(`nohup ${botPath} ${args} >/dev/null 2>&1 &`);
+      await exec(`nohup "${botPath}" ${args} >/dev/null 2>&1 &`);
       console.log(`${botName} is running`);
       await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (error) {
@@ -948,25 +1001,32 @@ async function extractDomains() {
         await generateLinks(argoDomain);
       } else {
         console.log('ArgoDomain not found, re-running bot to obtain ArgoDomain');
-        // 删除 boot.log 文件，等待 2s 重新运行 server 以获取 ArgoDomain
+        // 删除 boot.log 文件，等待重新运行 cloudflared 以获取 ArgoDomain
         fs.unlinkSync(path.join(FILE_PATH, 'boot.log'));
-        async function killBotProcess() {
+
+        // 清理所有cloudflared进程
+        async function cleanupCloudflaredProcesses() {
           try {
-            // Windows系统使用taskkill命令
             if (process.platform === 'win32') {
-              await exec(`taskkill /f /im ${botName}.exe > nul 2>&1`);
+              // Windows: 杀死所有cloudflared进程
+              await exec(`taskkill /f /im cloudflared.exe > nul 2>&1`);
             } else {
+              // Linux/Unix: 杀死所有包含"tunnel"关键字的cloudflared进程
+              await exec(`pkill -9 -f "cloudflared.*tunnel" > /dev/null 2>&1`);
+              // 同时尝试按进程名杀死
               await exec(`pkill -f "[${botName.charAt(0)}]${botName.substring(1)}" > /dev/null 2>&1`);
             }
           } catch (error) {
-            // 忽略输出
+            // 忽略错误，进程可能不存在
           }
         }
-        killBotProcess();
+
+        await cleanupCloudflaredProcesses();
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        const args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile ${FILE_PATH}/boot.log --loglevel info --url http://localhost:${ARGO_PORT}`;
+
+        const args = `tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile "${bootLogPath}" --loglevel info --url http://localhost:${ARGO_PORT}`;
         try {
-          await exec(`nohup ${botPath} ${args} >/dev/null 2>&1 &`);
+          await exec(`nohup "${botPath}" ${args} >/dev/null 2>&1 &`);
           console.log(`${botName} is running`);
           await new Promise((resolve) => setTimeout(resolve, 3000));
           await extractDomains(); // 重新提取域名
