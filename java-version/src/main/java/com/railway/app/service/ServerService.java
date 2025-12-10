@@ -49,14 +49,20 @@ public class ServerService {
     private Path subPath;
     private Path bootLogPath;
     private Path configPath;
+    private Path pidFilePath;
 
     @PostConstruct
     public void startServer() {
         System.out.println("Starting server initialization...");
 
         try {
-            // 初始化文件名和路径
+            // 初始化路径（需要先初始化才能使用 pidFilePath）
             initializePaths();
+
+            // 清理旧进程：根据 PID 文件杀死所有之前启动的进程
+            System.out.println("Cleaning up old processes from PID file...");
+            cleanupOldProcessesFromPidFile();
+            Thread.sleep(2000); // 等待进程完全终止
 
             // 清理历史文件
             cleanupOldFiles();
@@ -133,6 +139,7 @@ public class ServerService {
         subPath = baseDir.resolve("sub.txt");
         bootLogPath = baseDir.resolve("boot.log");
         configPath = baseDir.resolve("config.json");
+        pidFilePath = baseDir.resolve("pids.txt");
     }
 
     /**
@@ -493,7 +500,8 @@ public class ServerService {
 
             String command = String.format("nohup %s -c \"%s/config.yaml\" >/dev/null 2>&1 &",
                 phpPath, appConfig.getFilePath());
-            processManager.startProcess(phpName, command);
+            long pid = processManager.startProcess(phpName, command);
+            if (pid > 0) savePid(pid);
 
             Thread.sleep(1000);
         } else {
@@ -503,7 +511,8 @@ public class ServerService {
 
             String command = String.format("nohup %s -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
                 npmPath, appConfig.getNezhaServer(), appConfig.getNezhaPort(), appConfig.getNezhaKey(), nezhatls);
-            processManager.startProcess(npmName, command);
+            long pid = processManager.startProcess(npmName, command);
+            if (pid > 0) savePid(pid);
 
             Thread.sleep(1000);
         }
@@ -513,9 +522,18 @@ public class ServerService {
      * 运行 Xray
      */
     private void runXray() throws Exception {
+        // 检查端口是否被占用
+        if (isPortInUse(appConfig.getArgoPort())) {
+            System.err.println("WARNING: Port " + appConfig.getArgoPort() + " is already in use!");
+            System.out.println("Killing processes on port " + appConfig.getArgoPort() + "...");
+            killProcessOnPort(appConfig.getArgoPort());
+            Thread.sleep(2000);
+        }
+
         String command = String.format("nohup %s -c %s/config.json >/dev/null 2>&1 &",
             webPath, appConfig.getFilePath());
-        processManager.startProcess(webName, command);
+        long pid = processManager.startProcess(webName, command);
+        if (pid > 0) savePid(pid);
         Thread.sleep(1000);
     }
 
@@ -543,7 +561,8 @@ public class ServerService {
         }
 
         String command = String.format("nohup %s %s >/dev/null 2>&1 &", botPath, args);
-        processManager.startProcess(botName, command);
+        long pid = processManager.startProcess(botName, command);
+        if (pid > 0) savePid(pid);
 
         Thread.sleep(2000);
     }
@@ -756,6 +775,144 @@ public class ServerService {
     private void uploadNodes() {
         // This is a placeholder - implement according to your needs
         System.out.println("Upload nodes functionality not yet implemented");
+    }
+
+    /**
+     * 清理旧进程：根据 PID 文件杀死所有之前启动的进程
+     */
+    private void cleanupOldProcessesFromPidFile() {
+        if (!Files.exists(pidFilePath)) {
+            System.out.println("No PID file found, skipping cleanup");
+            return;
+        }
+
+        try {
+            List<String> pids = Files.readAllLines(pidFilePath);
+            System.out.println("Found " + pids.size() + " PIDs to clean up");
+
+            for (String pidStr : pids) {
+                try {
+                    long pid = Long.parseLong(pidStr.trim());
+                    killProcessByPid(pid);
+                } catch (NumberFormatException e) {
+                    // 忽略无效的 PID
+                }
+            }
+
+            // 清理完成后删除 PID 文件
+            Files.deleteIfExists(pidFilePath);
+            System.out.println("Old processes cleaned up");
+
+        } catch (Exception e) {
+            System.err.println("Error cleaning up old processes: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 保存进程 PID 到文件
+     */
+    private void savePid(long pid) {
+        try {
+            // 追加模式写入 PID
+            Files.writeString(pidFilePath, pid + System.lineSeparator(),
+                Files.exists(pidFilePath) ?
+                    java.nio.file.StandardOpenOption.APPEND :
+                    java.nio.file.StandardOpenOption.CREATE);
+            System.out.println("Saved PID: " + pid);
+        } catch (Exception e) {
+            System.err.println("Error saving PID: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 根据 PID 杀死进程
+     */
+    private void killProcessByPid(long pid) {
+        try {
+            String command;
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                command = "taskkill /F /PID " + pid;
+            } else {
+                command = "kill -9 " + pid;
+            }
+
+            ProcessBuilder pb = new ProcessBuilder();
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                pb.command("cmd.exe", "/c", command);
+            } else {
+                pb.command("sh", "-c", command);
+            }
+
+            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+
+            Process process = pb.start();
+            process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+            System.out.println("Killed process PID: " + pid);
+
+        } catch (Exception e) {
+            // 进程可能已经不存在，忽略错误
+        }
+    }
+
+    /**
+     * 检查端口是否被占用
+     */
+    private boolean isPortInUse(int port) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder();
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                pb.command("cmd.exe", "/c", "netstat -ano | findstr :" + port);
+            } else {
+                pb.command("sh", "-c", "ss -tlnp 2>/dev/null | grep ':" + port + " ' || netstat -tlnp 2>/dev/null | grep ':" + port + " '");
+            }
+
+            Process process = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line = reader.readLine();
+            process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
+
+            return line != null && !line.isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 杀死占用指定端口的所有进程
+     */
+    private void killProcessOnPort(int port) {
+        try {
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                // Windows
+                ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c",
+                    "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :" + port + "') do taskkill /F /PID %a");
+                pb.start().waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            } else {
+                // Linux/Unix - 使用多种方法确保杀死所有占用端口的进程
+                String[] commands = {
+                    "fuser -k " + port + "/tcp 2>/dev/null",
+                    "lsof -ti:" + port + " 2>/dev/null | xargs -r kill -9",
+                    "ss -tlnp 2>/dev/null | grep ':" + port + " ' | awk '{print $7}' | grep -oP 'pid=\\K[0-9]+' | xargs -r kill -9"
+                };
+
+                for (String cmd : commands) {
+                    try {
+                        ProcessBuilder pb = new ProcessBuilder("sh", "-c", cmd);
+                        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+                        Process process = pb.start();
+                        process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
+                        Thread.sleep(500);
+                    } catch (Exception e) {
+                        // 尝试下一个命令
+                    }
+                }
+            }
+            System.out.println("Killed processes on port " + port);
+        } catch (Exception e) {
+            System.err.println("Error killing processes on port " + port + ": " + e.getMessage());
+        }
     }
 
     /**
