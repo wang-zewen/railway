@@ -793,7 +793,7 @@ use_ipv6_country_code: false
 uuid: ${UUID}`;
       
       fs.writeFileSync(path.join(FILE_PATH, 'config.yaml'), configYaml);
-      
+
       // 运行 v1
       const command = `nohup ${phpPath} -c "${FILE_PATH}/config.yaml" >/dev/null 2>&1 &`;
       try {
@@ -952,7 +952,6 @@ async function extractDomains() {
         fs.unlinkSync(path.join(FILE_PATH, 'boot.log'));
         async function killBotProcess() {
           try {
-            // Windows系统使用taskkill命令
             if (process.platform === 'win32') {
               await exec(`taskkill /f /im ${botName}.exe > nul 2>&1`);
             } else {
