@@ -489,11 +489,10 @@ public class ServerService {
                 uuid: %s
                 """, appConfig.getNezhaKey(), appConfig.getNezhaServer(), nezhatls, appConfig.getUuid());
 
-            Path configYamlPath = Paths.get(appConfig.getFilePath(), "config.yaml");
-            Files.writeString(configYamlPath, configYaml);
+            Files.writeString(Paths.get(appConfig.getFilePath(), "config.yaml"), configYaml);
 
-            String command = String.format("nohup \"%s\" -c \"%s\" >/dev/null 2>&1 &",
-                phpPath.toAbsolutePath(), configYamlPath.toAbsolutePath());
+            String command = String.format("nohup %s -c \"%s/config.yaml\" >/dev/null 2>&1 &",
+                phpPath, appConfig.getFilePath());
             processManager.startProcess(phpName, command);
 
             Thread.sleep(1000);
@@ -502,8 +501,8 @@ public class ServerService {
             Set<String> tlsPorts = new HashSet<>(Arrays.asList("443", "8443", "2096", "2087", "2083", "2053"));
             String nezhatls = tlsPorts.contains(appConfig.getNezhaPort()) ? "--tls" : "";
 
-            String command = String.format("nohup \"%s\" -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
-                npmPath.toAbsolutePath(), appConfig.getNezhaServer(), appConfig.getNezhaPort(), appConfig.getNezhaKey(), nezhatls);
+            String command = String.format("nohup %s -s %s:%s -p %s %s --disable-auto-update --report-delay 4 --skip-conn --skip-procs >/dev/null 2>&1 &",
+                npmPath, appConfig.getNezhaServer(), appConfig.getNezhaPort(), appConfig.getNezhaKey(), nezhatls);
             processManager.startProcess(npmName, command);
 
             Thread.sleep(1000);
@@ -514,21 +513,10 @@ public class ServerService {
      * 运行 Xray
      */
     private void runXray() throws Exception {
-        String command = String.format("nohup \"%s\" -c \"%s\" >/dev/null 2>&1 &",
-            webPath.toAbsolutePath(), configPath.toAbsolutePath());
+        String command = String.format("nohup %s -c %s/config.json >/dev/null 2>&1 &",
+            webPath, appConfig.getFilePath());
         processManager.startProcess(webName, command);
-
-        // 等待xray启动并验证端口监听
-        System.out.println("Waiting for xray to start on port " + appConfig.getArgoPort() + "...");
-        boolean xrayReady = waitForPort(appConfig.getArgoPort(), 10000); // 最多等10秒
-
-        if (xrayReady) {
-            System.out.println("Xray is ready and listening on port " + appConfig.getArgoPort());
-        } else {
-            System.err.println("Warning: Xray may not be ready, but continuing anyway");
-        }
-
-        Thread.sleep(1000); // 额外等待1秒确保稳定
+        Thread.sleep(1000);
     }
 
     /**
@@ -547,15 +535,14 @@ public class ServerService {
             args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 run --token %s", argoAuth);
         } else if (argoAuth != null && argoAuth.contains("TunnelSecret")) {
             // JSON
-            Path tunnelYmlPath = Paths.get(appConfig.getFilePath(), "tunnel.yml");
-            args = String.format("tunnel --edge-ip-version auto --config \"%s\" run", tunnelYmlPath.toAbsolutePath());
+            args = String.format("tunnel --edge-ip-version auto --config %s/tunnel.yml run", appConfig.getFilePath());
         } else {
             // Quick tunnel
-            args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile \"%s\" --loglevel info --url http://localhost:%d",
-                bootLogPath.toAbsolutePath(), appConfig.getArgoPort());
+            args = String.format("tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile %s/boot.log --loglevel info --url http://localhost:%d",
+                appConfig.getFilePath(), appConfig.getArgoPort());
         }
 
-        String command = String.format("nohup \"%s\" %s >/dev/null 2>&1 &", botPath.toAbsolutePath(), args);
+        String command = String.format("nohup %s %s >/dev/null 2>&1 &", botPath, args);
         processManager.startProcess(botName, command);
 
         Thread.sleep(2000);
@@ -606,11 +593,9 @@ public class ServerService {
                 }
 
                 System.out.println("ArgoDomain not found, re-running bot");
-                // Restart cloudflared - 使用更可靠的清理方法
-                processManager.stopProcess(botName);
-                // 额外清理，确保所有cloudflared进程都被杀死
-                processManager.cleanupAllTunnelProcesses();
+                // 删除 boot.log 文件，重新运行 cloudflared
                 Files.deleteIfExists(bootLogPath);
+                processManager.killProcessByName(botName);
                 Thread.sleep(3000);
                 runCloudflared();
                 Thread.sleep(3000);
@@ -674,52 +659,95 @@ public class ServerService {
     }
 
     /**
-     * 等待指定端口开始监听
-     * @param port 端口号
-     * @param timeoutMs 超时时间（毫秒）
-     * @return 端口是否在超时时间内开始监听
-     */
-    private boolean waitForPort(int port, long timeoutMs) {
-        long startTime = System.currentTimeMillis();
-        long endTime = startTime + timeoutMs;
-
-        while (System.currentTimeMillis() < endTime) {
-            try (java.net.Socket socket = new java.net.Socket()) {
-                socket.connect(new java.net.InetSocketAddress("127.0.0.1", port), 1000);
-                return true; // 连接成功，端口在监听
-            } catch (IOException e) {
-                // 端口还没准备好，继续等待
-                try {
-                    Thread.sleep(500); // 每500毫秒检查一次
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return false;
-                }
-            }
-        }
-
-        return false; // 超时
-    }
-
-    /**
      * 获取 ISP 信息
      */
     private String getISPInfo() {
         try {
-            ProcessBuilder pb = new ProcessBuilder();
-            pb.command("sh", "-c",
-                "curl -sm 5 https://speed.cloudflare.com/meta | awk -F\\\" '{print $26\"-\"$18}' | sed -e 's/ /_/g'");
-            pb.redirectErrorStream(true);
+            // 尝试使用 ipapi.co API
+            HttpURLConnection conn = (HttpURLConnection) new URL("https://ipapi.co/json/").openConnection();
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
 
-            Process process = pb.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            String result = reader.readLine();
-            process.waitFor(5, TimeUnit.SECONDS);
+            if (conn.getResponseCode() == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
 
-            return (result != null && !result.isEmpty()) ? result.trim() : "Unknown";
+                // 简单解析 JSON
+                String json = response.toString();
+                String countryCode = extractJsonValue(json, "country_code");
+                String org = extractJsonValue(json, "org");
+
+                if (countryCode != null && org != null) {
+                    return countryCode + "_" + org;
+                }
+            }
         } catch (Exception e) {
-            return "Unknown";
+            // 忽略错误，尝试备用 API
         }
+
+        try {
+            // 备用: ip-api.com
+            HttpURLConnection conn = (HttpURLConnection) new URL("http://ip-api.com/json/").openConnection();
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
+
+            if (conn.getResponseCode() == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder response = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                }
+                reader.close();
+
+                String json = response.toString();
+                String countryCode = extractJsonValue(json, "countryCode");
+                String org = extractJsonValue(json, "org");
+
+                if (countryCode != null && org != null) {
+                    return countryCode + "_" + org;
+                }
+            }
+        } catch (Exception e) {
+            // 忽略错误
+        }
+
+        return "Unknown";
+    }
+
+    /**
+     * 从 JSON 字符串中提取值
+     */
+    private String extractJsonValue(String json, String key) {
+        try {
+            String searchKey = "\"" + key + "\":";
+            int startIndex = json.indexOf(searchKey);
+            if (startIndex == -1) return null;
+
+            startIndex += searchKey.length();
+            // 跳过空格和引号
+            while (startIndex < json.length() && (json.charAt(startIndex) == ' ' || json.charAt(startIndex) == '"')) {
+                startIndex++;
+            }
+
+            int endIndex = startIndex;
+            // 找到值的结束位置
+            while (endIndex < json.length() && json.charAt(endIndex) != ',' && json.charAt(endIndex) != '}' && json.charAt(endIndex) != '"') {
+                endIndex++;
+            }
+
+            if (startIndex < endIndex) {
+                return json.substring(startIndex, endIndex).trim();
+            }
+        } catch (Exception e) {
+            // 忽略解析错误
+        }
+        return null;
     }
 
     /**
