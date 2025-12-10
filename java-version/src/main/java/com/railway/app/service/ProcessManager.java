@@ -53,7 +53,11 @@ public class ProcessManager {
                 System.err.println("Error reading PID: " + e.getMessage());
             }
 
-            process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS);
+            try {
+                process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             processes.put(name, null); // 不保存 shell process，因为它已经结束
         }
 
