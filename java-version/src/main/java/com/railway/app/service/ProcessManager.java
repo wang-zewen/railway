@@ -58,7 +58,8 @@ public class ProcessManager {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            processes.put(name, null); // 不保存 shell process，因为它已经结束
+            // 保存已终止的 shell process（不能存 null，ConcurrentHashMap 不允许）
+            processes.put(name, process);
         }
 
         System.out.println(name + " is running with PID: " + pid);
